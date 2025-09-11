@@ -245,7 +245,7 @@ export default function TakeTest() {
                 {snapshotUrl && (
                   <div className="flex-1 min-w-[240px]">
                     <div className="text-sm font-medium mb-1">Snapshot preview:</div>
-                    <img src={snapshotUrl} alt="Snapshot" className="w-full h-56 object-contain rounded border bg-black/5" />
+                    <img src={snapshotUrl} alt="Snapshot" loading="lazy" className="w-full h-56 object-contain rounded border bg-black/5" />
                   </div>
                 )}
               </div>

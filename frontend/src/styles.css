@@ -147,7 +147,7 @@ body::before {
     right: 0;
     height: 100vh;
     /* Use relative path so Vite rewrites it correctly for production */
-    background-image: url('./images/ma.jpg');
+    background-image: url('./images/ma.webp');
     background-size: cover;
     background-position: top center;
     background-repeat: no-repeat;

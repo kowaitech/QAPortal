@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuthStore } from '../../utils/authStore';
+import { api } from '../../utils/axios';
 
 export default function TestSchedule() {
   const { accessToken } = useAuthStore.getState();
@@ -9,8 +10,11 @@ export default function TestSchedule() {
   const [domains, setDomains] = useState([]);
   const [title, setTitle] = useState('');
   const [domainIds, setDomainIds] = useState([]);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [date, setDate] = useState('');
+  const [startTime, setStartTime] = useState(''); // hh:mm
+  const [startMeridiem, setStartMeridiem] = useState('AM');
+  const [endTime, setEndTime] = useState(''); // hh:mm
+  const [endMeridiem, setEndMeridiem] = useState('AM');
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [msg, setMsg] = useState('');
 
@@ -19,14 +23,25 @@ export default function TestSchedule() {
   const headers = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
 
   useEffect(() => {
-    // fetch only staff-created domains
-    fetch(`${apiBase}/domains?createdBy=staff`, { headers })
-      .then(r => r.json()).then(setDomains).catch(() => { });
-
-    // fetch all tests for manage list
-    fetch(`${apiBase}/tests`, { headers })
-      .then(r => r.json()).then(setTests).catch(() => { });
+    api.get(`/domains?createdBy=staff`, { headers, withCredentials: true })
+      .then(r => setDomains(r.data)).catch(() => { });
+    api.get(`/tests`, { headers, withCredentials: true })
+      .then(r => setTests(r.data)).catch(() => { });
   }, []);
+
+  const toIsoFromInputs = (d, t, meridiem) => {
+    if (!d || !t) return null;
+    const [hhStr, mmStr] = t.split(':');
+    let hh = parseInt(hhStr || '0', 10);
+    const mm = parseInt(mmStr || '0', 10);
+    if (meridiem === 'PM' && hh !== 12) hh += 12;
+    if (meridiem === 'AM' && hh === 12) hh = 0;
+    const iso = new Date(`${d}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`);
+    return iso.toISOString();
+  };
+
+  const startISO = useMemo(() => toIsoFromInputs(date, startTime, startMeridiem), [date, startTime, startMeridiem]);
+  const endISO = useMemo(() => toIsoFromInputs(date, endTime, endMeridiem), [date, endTime, endMeridiem]);
 
   const onToggleDomain = (id) => {
     setDomainIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -36,18 +51,22 @@ export default function TestSchedule() {
     e.preventDefault();
     setMsg('');
     try {
-      const res = await fetch(`${apiBase}/tests/create`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ title, domains: domainIds, startDate, endDate, durationMinutes })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Failed to save');
+      // Validation: ensure date not in past and end after start
+      const now = new Date();
+      const start = startISO ? new Date(startISO) : null;
+      const end = endISO ? new Date(endISO) : null;
+      if (!start || !end) throw new Error('Please select date, start and end times.');
+      if (start < new Date(now.toDateString())) throw new Error('Date cannot be in the past.');
+      if (end <= start) throw new Error('End time must be after start time.');
+
+      const { data } = await api.post(`/tests/admin`, { title, domains: domainIds, startDate: startISO, endDate: endISO, durationMinutes }, { headers, withCredentials: true });
+      const resData = data;
+      if (!resData?._id) throw new Error('Failed to save');
       setMsg('Test saved');
       // refresh tests list
-      fetch(`${apiBase}/tests`, { headers }).then(r => r.json()).then(setTests);
+      api.get(`/tests`, { headers, withCredentials: true }).then(r => setTests(r.data));
       // reset form
-      setTitle(''); setDomainIds([]); setStartDate(''); setEndDate(''); setDurationMinutes(60);
+      setTitle(''); setDomainIds([]); setDate(''); setStartTime(''); setEndTime(''); setStartMeridiem('AM'); setEndMeridiem('AM'); setDurationMinutes(60);
     } catch (err) {
       setMsg(err.message);
     }
@@ -55,8 +74,8 @@ export default function TestSchedule() {
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this test?')) return; // replace with custom dialog later if TestSchedule is used
-    const res = await fetch(`${apiBase}/tests/${id}`, { method: 'DELETE', headers });
-    if (res.ok) setTests(prev => prev.filter(t => t._id !== id));
+    const res = await api.delete(`/tests/${id}`, { headers, withCredentials: true });
+    if (res.status === 200) setTests(prev => prev.filter(t => t._id !== id));
   };
 
   return (
@@ -85,12 +104,31 @@ export default function TestSchedule() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <label className="block">Start
-              <input type="datetime-local" className="input" value={startDate} onChange={e => setStartDate(e.target.value)} required />
+            <label className="block">Date
+              <input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} required min={new Date().toISOString().split('T')[0]} />
             </label>
-            <label className="block">End
-              <input type="datetime-local" className="input" value={endDate} onChange={e => setEndDate(e.target.value)} required />
-            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">Start Time
+                <input type="time" className="input" value={startTime} onChange={e => setStartTime(e.target.value)} required />
+              </label>
+              <label className="block">AM/PM
+                <select className="input" value={startMeridiem} onChange={e => setStartMeridiem(e.target.value)}>
+                  <option>AM</option>
+                  <option>PM</option>
+                </select>
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">End Time
+                <input type="time" className="input" value={endTime} onChange={e => setEndTime(e.target.value)} required />
+              </label>
+              <label className="block">AM/PM
+                <select className="input" value={endMeridiem} onChange={e => setEndMeridiem(e.target.value)}>
+                  <option>AM</option>
+                  <option>PM</option>
+                </select>
+              </label>
+            </div>
             <label className="block">Duration (mins)
               <input type="number" className="input" value={durationMinutes} onChange={e => setDurationMinutes(+e.target.value)} min={1} />
             </label>

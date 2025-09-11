@@ -24,7 +24,7 @@ export default function Navbar() {
     <header className="bg-white/80 backdrop-blur border-b shadow-sm">
       <div className="container-page p-4 flex justify-between items-center">
         <NavLink to="/" className="flex items-center group">
-          <img src={logo} alt="Logo" className="h-10 w-auto rounded-lg shadow-sm" />
+          <img src={logo} alt="Logo" loading="lazy" className="h-10 w-auto rounded-lg shadow-sm" />
         </NavLink>
 
         <nav className="flex items-center gap-3">

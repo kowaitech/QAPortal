@@ -191,7 +191,7 @@ const SimpleTextEditor = ({
             if (response.data && response.data.url) {
                 // Insert image into text
                 const currentValue = value || '';
-                const imageTag = `<img src="${response.data.url}" alt="Uploaded image" style="max-width: 100%; height: auto; margin: 8px 0;" />`;
+                const imageTag = `<img src="${response.data.url}" alt="Uploaded image" loading="lazy" style="max-width: 100%; height: auto; margin: 8px 0;" />`;
                 const newValue = currentValue + (currentValue ? '\n' : '') + imageTag;
                 onChange(newValue);
                 setUploadedBytes(prev => prev + file.size);
@@ -307,7 +307,7 @@ const SimpleTextEditor = ({
                 {/* Hover Preview: large image without backdrop */}
                 {hoverUrl && (
                     <div className="fixed inset-0 z-[9999] pointer-events-none flex items-center justify-center">
-                        <img src={hoverUrl} alt="Preview" className="w-[60vw] h-[60vh] object-contain shadow-2xl rounded" />
+                        <img src={hoverUrl} alt="Preview" loading="lazy" className="w-[60vw] h-[60vh] object-contain shadow-2xl rounded" />
                     </div>
                 )}
             </div>

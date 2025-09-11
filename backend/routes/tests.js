@@ -46,11 +46,20 @@ router.post('/admin', auth, requireRole('admin'), async (req, res) => {
       return res.status(400).json({ message: 'One or more invalid domain IDs' });
     }
 
+    // Normalize and validate dates
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const startOfToday = new Date();
+    startOfToday.setHours(0,0,0,0);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return res.status(400).json({ message: 'Invalid start or end date' });
+    if (end <= start) return res.status(400).json({ message: 'End time must be after start time' });
+    if (start < startOfToday) return res.status(400).json({ message: 'Date cannot be in the past' });
+
     const test = await Test.create({
       title,
       domains,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
+      startDate: start,
+      endDate: end,
       durationMinutes,
       sections,
       eligibleStudents,
@@ -187,11 +196,19 @@ router.put('/:id', auth, requireRole('admin'), async (req, res) => {
     const { id } = req.params;
     const { title, domains, startDate, endDate, durationMinutes } = req.body;
 
-    const updatedTest = await Test.findByIdAndUpdate(
-      id,
-      { title, domains, startDate, endDate, durationMinutes },
-      { new: true }
-    );
+    let update = { title, domains, durationMinutes };
+    if (startDate) update.startDate = new Date(startDate);
+    if (endDate) update.endDate = new Date(endDate);
+
+    if (update.startDate && update.endDate) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0,0,0,0);
+      if (isNaN(update.startDate.getTime()) || isNaN(update.endDate.getTime())) return res.status(400).json({ message: 'Invalid start or end date' });
+      if (update.endDate <= update.startDate) return res.status(400).json({ message: 'End time must be after start time' });
+      if (update.startDate < startOfToday) return res.status(400).json({ message: 'Date cannot be in the past' });
+    }
+
+    const updatedTest = await Test.findByIdAndUpdate(id, update, { new: true });
 
     if (!updatedTest) {
       return res.status(404).json({ message: 'Test not found' });
