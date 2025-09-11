@@ -17,20 +17,29 @@ import uploadRoutes from './routes/upload.js';
 dotenv.config();
 const app = express();
 
-// Configure helmet with less restrictive settings
+// ✅ CORS first
+app.use(cors({
+  origin: [
+    process.env.CLIENT_ORIGIN || "http://localhost:5173",
+    "https://qaportal-1.onrender.com"
+  ],
+  credentials: true
+}));
+
+// ✅ Helmet after cors
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: false, // Disable CSP for development
+  contentSecurityPolicy: false, // disable CSP for now
 }));
 
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173', credentials: true }));
 
-// Serve uploaded files statically
+// ✅ Serve static uploads
 app.use('/uploads', express.static('uploads'));
 
+// ✅ Routes
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 app.use('/questions', questionRoutes);
@@ -39,11 +48,11 @@ app.use('/student-answers', studentAnswerRoutes);
 app.use('/tests', testsRoutes);
 app.use('/upload', uploadRoutes);
 
-// simple root
+// ✅ Root route
 app.get('/', (req, res) => res.json({ ok: true }));
 
+// ✅ Connect DB and start server
 const PORT = process.env.PORT || 8080;
 connectDB(process.env.MONGO_URI).then(() => {
-  app.listen(PORT, () => console.log('API running on', PORT));
+  app.listen(PORT, () => console.log(`API running on port ${PORT}`));
 });
-
