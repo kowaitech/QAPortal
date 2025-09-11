@@ -15,8 +15,11 @@ export default function AdminDashboard() {
   const [form, setForm] = useState({
     title: "",
     domains: [],
-    startDate: "",
-    endDate: "",
+    date: "",
+    startTime: "",
+    startMeridiem: "AM",
+    endTime: "",
+    endMeridiem: "AM",
     durationMinutes: 60,
     eligibleStudents: [],
     isOpenToAll: true,
@@ -86,7 +89,7 @@ export default function AdminDashboard() {
     mutationFn: (payload) => api.post("/tests/admin", payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tests"] });
-      setForm({ title: "", domains: [], startDate: "", endDate: "", durationMinutes: 60, eligibleStudents: [], isOpenToAll: true });
+      setForm({ title: "", domains: [], date: "", startTime: "", startMeridiem: "AM", endTime: "", endMeridiem: "AM", durationMinutes: 60, eligibleStudents: [], isOpenToAll: true });
     },
   });
 
@@ -147,6 +150,48 @@ export default function AdminDashboard() {
     debouncedCheckTitle(newTitle);
   };
 
+  const parseDateParts = (d) => {
+    if (!d) return null;
+    // Accept dd-mm-yyyy and yyyy-mm-dd
+    const dmY = /^(\d{2})-(\d{2})-(\d{4})$/;
+    const ymD = /^(\d{4})-(\d{2})-(\d{2})$/;
+    let y, m, day;
+    if (dmY.test(d)) {
+      const [, dd, mm, yyyy] = d.match(dmY);
+      y = parseInt(yyyy, 10);
+      m = parseInt(mm, 10);
+      day = parseInt(dd, 10);
+    } else if (ymD.test(d)) {
+      const [, yyyy, mm, dd] = d.match(ymD);
+      y = parseInt(yyyy, 10);
+      m = parseInt(mm, 10);
+      day = parseInt(dd, 10);
+    } else {
+      return null;
+    }
+    return { y, m, day };
+  };
+
+  const toIsoFromInputs = (d, t, meridiem) => {
+    if (!d || !t) return null;
+    const parts = parseDateParts(d);
+    if (!parts) return null;
+    const [hhStr, mmStr] = String(t).split(":");
+    let hh = parseInt(hhStr || "0", 10);
+    const mm = parseInt(mmStr || "0", 10);
+    if (isNaN(hh) || isNaN(mm)) return null;
+    // Support both 24-hour and 12-hour inputs:
+    // - If user typed 13..23, treat as 24h and ignore meridiem toggle.
+    // - If user typed 1..12, apply AM/PM conversion.
+    if (hh >= 0 && hh <= 12) {
+      if (meridiem === "PM" && hh !== 12) hh += 12;
+      if (meridiem === "AM" && hh === 12) hh = 0;
+    }
+    const localDate = new Date(parts.y, parts.m - 1, parts.day, hh, mm, 0, 0);
+    if (isNaN(localDate.getTime())) return null;
+    return localDate.toISOString();
+  };
+
   const handleTestSubmit = (e) => {
     e.preventDefault();
     if (form.domains.length === 0) {
@@ -158,11 +203,34 @@ export default function AdminDashboard() {
       dialog.alert('Please fix the test title validation error');
       return;
     }
+    // Build ISO dates from 12-hour inputs
+    const startISO = toIsoFromInputs(form.date, form.startTime, form.startMeridiem);
+    const endISO = toIsoFromInputs(form.date, form.endTime, form.endMeridiem);
+    if (!startISO || !endISO) {
+      dialog.alert('Invalid date/time. Use date as dd-mm-yyyy or yyyy-mm-dd and time as HH:MM.');
+      return;
+    }
+    const start = new Date(startISO);
+    const end = new Date(endISO);
+    const startOfToday = new Date();
+    startOfToday.setHours(0,0,0,0);
+    if (start < startOfToday) {
+      dialog.alert('Date cannot be in the past');
+      return;
+    }
+    if (end <= start) {
+      dialog.alert('End time must be after start time');
+      return;
+    }
 
-    // Prepare payload based on whether test is open to all or specific students
+    // Prepare payload
     const payload = {
-      ...form,
-      eligibleStudents: form.isOpenToAll ? [] : form.eligibleStudents
+      title: form.title,
+      domains: form.domains,
+      startDate: startISO,
+      endDate: endISO,
+      durationMinutes: form.durationMinutes,
+      eligibleStudents: form.isOpenToAll ? [] : form.eligibleStudents,
     };
 
     createTest.mutate(payload);
@@ -396,20 +464,65 @@ export default function AdminDashboard() {
               min="1"
             />
 
-            <input
-              type="datetime-local"
-              value={form.startDate}
-              onChange={(e) => setForm({ ...form, startDate: e.target.value })}
-              className="border p-2 rounded w-full"
-              required
-            />
-            <input
-              type="datetime-local"
-              value={form.endDate}
-              onChange={(e) => setForm({ ...form, endDate: e.target.value })}
-              className="border p-2 rounded w-full"
-              required
-            />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <label className="block">
+                <span className="text-sm">Date</span>
+                <input
+                  type="date"
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  className="border p-2 rounded w-full"
+                  required
+                  min={new Date().toISOString().split('T')[0]}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="text-sm">Start Time</span>
+                  <input
+                    type="time"
+                    value={form.startTime}
+                    onChange={(e) => setForm({ ...form, startTime: e.target.value })}
+                    className="border p-2 rounded w-full"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm">AM/PM</span>
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={form.startMeridiem}
+                    onChange={(e) => setForm({ ...form, startMeridiem: e.target.value })}
+                  >
+                    <option>AM</option>
+                    <option>PM</option>
+                  </select>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="text-sm">End Time</span>
+                  <input
+                    type="time"
+                    value={form.endTime}
+                    onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+                    className="border p-2 rounded w-full"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm">AM/PM</span>
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={form.endMeridiem}
+                    onChange={(e) => setForm({ ...form, endMeridiem: e.target.value })}
+                  >
+                    <option>AM</option>
+                    <option>PM</option>
+                  </select>
+                </label>
+              </div>
+            </div>
 
             {/* Student Eligibility Selection */}
             <div className="border p-3 rounded w-full">
@@ -516,11 +629,11 @@ export default function AdminDashboard() {
                       </td>
                       <td className="p-2">
                         {t.startDate
-                          ? new Date(t.startDate).toLocaleString()
+                          ? new Date(t.startDate).toLocaleString(undefined, { hour12: true })
                           : "—"}{" "}
                         -{" "}
                         {t.endDate
-                          ? new Date(t.endDate).toLocaleString()
+                          ? new Date(t.endDate).toLocaleString(undefined, { hour12: true })
                           : "—"}
                       </td>
                       <td className="p-2">
