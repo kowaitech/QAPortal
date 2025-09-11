@@ -9,7 +9,7 @@ import DialogProvider from './components/DialogProvider';
 const qc = new QueryClient();
 ReactDOM.createRoot(document.getElementById('root')).render(
   <QueryClientProvider client={qc}>
-    <BrowserRouter>
+    <BrowserRouter basename="/">
       <DialogProvider>
         <App />
       </DialogProvider>
