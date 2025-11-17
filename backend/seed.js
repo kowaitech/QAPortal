@@ -10,7 +10,7 @@ const SEED_USERS = [
   {
     name: 'Admin',
     email: 'admin@gmail.com',
-    password: 'admin@123',
+    password: 'Admin@123',
     role: 'admin',
     isActive: true,
   },

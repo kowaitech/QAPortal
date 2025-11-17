@@ -90,12 +90,14 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'Invalid role. Must be admin, staff, or student.' });
     }
 
+    const autoActive = validRole === 'student';
+
     const user = await User.create({ 
       name: normalizedName, 
       email: normalizedEmail, 
       password: hash, 
       role: validRole, 
-      isActive: false,
+      isActive: autoActive,
       collegeName: collegeName?.trim?.() || undefined,
       mobileNumber: mobileNumber?.trim?.() || undefined,
       department: department?.trim?.() || undefined,
@@ -136,7 +138,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    if (!user.isActive) {
+    if (!user.isActive && user.role !== 'student') {
       logger.warn('Login failed: Account not active', { email: normalizedEmail });
       return res.status(403).json({ message: 'Account not approved by admin yet' });
     }

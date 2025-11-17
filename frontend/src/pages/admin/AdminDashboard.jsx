@@ -361,7 +361,7 @@ export default function AdminDashboard() {
                     <tr key={u._id} className="border-t">
                       <td className="p-2">{u.name}</td>
                       <td className="p-2">{u.email}</td>
-                      <td className="p-2">{u.collegeName || "-"}</td>
+                      <td className="p-2">{u.collegeName   || "-"}</td>
                       <td className="p-2">{u.mobileNumber || "-"}</td>
                       <td className="p-2">{u.department || "-"}</td>
                       <td className="p-2">{u.yearOfPassing || "-"}</td>

@@ -2,7 +2,6 @@ import express from 'express';
 import User from '../models/User.js';
 import Test from '../models/Test.js';
 import { auth, requireRole } from '../middleware/auth.js';
-import nodemailer from 'nodemailer';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -82,34 +81,6 @@ router.put("/tests/:id/status", async (req, res) => {
 });
 
 
-// Helper: send email with error handling
-async function sendMail(to, subject, text) {
-  if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
-    logger.warn('Email not configured', { to, subject });
-    return;
-  }
-  
-  try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { 
-        user: process.env.MAIL_USER, 
-        pass: process.env.MAIL_PASS 
-      },
-    });
-    
-    await transporter.sendMail({ 
-      from: `"Interview Portal" <${process.env.MAIL_USER}>`, 
-      to, 
-      subject, 
-      text 
-    });
-    logger.info('Email sent successfully', { to, subject });
-  } catch (err) {
-    logger.error('Email send failed', { to, subject, error: err.message });
-  }
-}
-
 // Get pending users (newest first). Supports optional pagination via query params
 router.get('/pending', async (req, res) => {
   try {
@@ -121,20 +92,20 @@ router.get('/pending', async (req, res) => {
     if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
       const [users, total] = await Promise.all([
-        User.find({ isActive: false })
-          .select('name email role createdAt')
+        User.find({ isActive: false, disabled: { $ne: true } })
+          .select('name email role createdAt collegeName mobileNumber department yearOfPassing')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit)
           .lean(),
-        User.countDocuments({ isActive: false })
+        User.countDocuments({ isActive: false, disabled: { $ne: true } })
       ]);
       logger.info('Pending users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
-    const users = await User.find({ isActive: false })
-      .select('name email role createdAt')
+    const users = await User.find({ isActive: false, disabled: { $ne: true } })
+      .select('name email role createdAt collegeName mobileNumber department yearOfPassing')
       .sort({ createdAt: -1 })
       .lean();
     logger.info('All pending users fetched', { count: users.length });
@@ -164,15 +135,7 @@ router.put('/approve/:id', async (req, res) => {
 
     logger.info('User approved successfully', { userId: user._id, userEmail: user.email, userName: user.name });
 
-    // Respond immediately; send email in background
     res.json({ message: 'User approved', user });
-
-    // Fire-and-forget email
-    sendMail(
-      user.email,
-      'Your account has been approved',
-      `Hello ${user.name},\n\nYour account has been approved by Admin. You can now login.\n\nRegards,\nInterview Portal`
-    );
   } catch (err) {
     logger.error('Failed to approve user', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
@@ -189,20 +152,20 @@ router.get('/registered', async (req, res) => {
 
     if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
-    const [users, total] = await Promise.all([
-      User.find({ isActive: true })
+      const [users, total] = await Promise.all([
+        User.find({ isActive: true, disabled: { $ne: true } })
         .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit)
           .lean(),
-        User.countDocuments({ isActive: true })
+        User.countDocuments({ isActive: true, disabled: { $ne: true } })
       ]);
       logger.info('Registered users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
-    const users = await User.find({ isActive: true })
+    const users = await User.find({ isActive: true, disabled: { $ne: true } })
       .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
       .sort({ createdAt: -1 })
       .lean();
@@ -225,22 +188,29 @@ router.delete('/remove/:id', async (req, res) => {
       return res.status(400).json({ message: 'Invalid user ID' });
     }
 
-    const user = await User.findByIdAndDelete(userId);
+    const user = await User.findById(userId);
     if (!user) {
       logger.warn('User deletion failed: User not found', { userId });
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Students are soft-deleted (disabled) so their records remain
+    if (user.role === 'student') {
+      user.disabled = true;
+      user.isActive = false;
+      await user.save();
+
+      logger.info('Student disabled instead of deletion', { userId: user._id });
+      res.json({ message: 'Student access revoked' });
+
+      return;
+    }
+
+    await User.findByIdAndDelete(userId);
     logger.info('User deleted successfully', { userId: user._id, userEmail: user.email, userName: user.name });
 
-    // Respond immediately; email in background
     res.json({ message: 'User removed' });
 
-    sendMail(
-      user.email,
-      'Your account has been removed',
-      `Hello ${user.name},\n\nYour account access has been denied/deleted. Please register again if needed.\n\nRegards,\nInterview Portal`
-    );
   } catch (err) {
     logger.error('Failed to delete user', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
