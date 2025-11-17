@@ -1,124 +1,112 @@
-// import express from 'express';
-// import User from '../models/User.js';
-// import { auth, requireRole } from '../middleware/auth.js';
-// import nodemailer from 'nodemailer';
-
-// const router = express.Router();
-// router.use(auth, requireRole('admin'));
-
-// router.get('/pending', async (req, res) => {
-//   const users = await User.find({ isActive: false }).select('name email role createdAt').lean();
-//   res.json({ users });
-// });
-
-// router.put('/approve/:id', async (req, res) => {
-//   const user = await User.findByIdAndUpdate(req.params.id, { isActive: true }, { new: true }).lean();
-//   if (!user) return res.status(404).json({ message: 'User not found' });
-
-//   try {
-//     if (process.env.MAIL_USER && process.env.MAIL_PASS) {
-//       const transporter = nodemailer.createTransport({
-//         service: 'gmail',
-//         auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS }
-//       });
-//       await transporter.sendMail({
-//         from: `"Interview Portal" <${process.env.MAIL_USER}>`,
-//         to: user.email,
-//         subject: 'Your account has been approved',
-//         text: `Hello ${user.name},\n\nYour account has been approved by Admin. You can now login.\n\nRegards, Interview Portal`
-//       });
-//     } else {
-//       console.log('MAIL not set; skip email to', user.email);
-//     }
-//   } catch (e) {
-//     console.error('Email error', e);
-//   }
-
-//   res.json({ message: 'User approved', user });
-// });
-
-// router.delete('/remove/:id', async (req, res) => {
-//   try {
-//     const u = await User.findByIdAndDelete(req.params.id);
-//     if(!u) return res.status(404).json({ message: 'User not found' });
-//     res.json({ message: 'User removed' });
-//   } catch(e) { res.status(500).json({ message: e.message }); }
-// });
-
-// //  Get all registered users (isActive = true)
-// router.get('/registered', async (req, res) => {
-//   try {
-//     const users = await User.find({ isActive: true })
-//       .select('name email role createdAt updatedAt')
-//       .lean();
-//     res.json({ users });
-//   } catch (err) {
-//     res.status(500).json({ message: err.message });
-//   }
-// });
-
-// //  Delete user (works for both pending & registered)
-// router.delete('/remove/:id', async (req, res) => {
-//   try {
-//     const u = await User.findByIdAndDelete(req.params.id);
-//     if (!u) return res.status(404).json({ message: 'User not found' });
-//     res.json({ message: 'User removed' });
-//   } catch (e) {
-//     res.status(500).json({ message: e.message });
-//   }
-// });
-
 import express from 'express';
 import User from '../models/User.js';
+import Test from '../models/Test.js';
 import { auth, requireRole } from '../middleware/auth.js';
 import nodemailer from 'nodemailer';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 router.use(auth, requireRole('admin'));
-import Test from "../models/Test.js";
 
 // Get all tests
-router.get("/tests", auth, requireRole("admin"), async (req, res) => {
-  const tests = await Test.find().populate("eligibleStudents", "name email college class group");
-  res.json(tests);
+router.get("/tests", async (req, res) => {
+  try {
+    logger.info('Fetching all tests');
+    const tests = await Test.find().populate("eligibleStudents", "name email college class group");
+    logger.info('Tests fetched successfully', { count: tests.length });
+    res.json(tests);
+  } catch (err) {
+    logger.error('Failed to fetch tests', { error: err.message });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // Create test
-router.post("/tests", auth, requireRole("admin"), async (req, res) => {
+router.post("/tests", async (req, res) => {
   try {
     const { title, domains, startDate, endDate, eligibleStudents } = req.body;
+    logger.info('Creating new test', { title, domainsCount: domains?.length, studentCount: eligibleStudents?.length });
+
+    if (!title || !domains || !startDate || !endDate) {
+      logger.warn('Test creation failed: Missing required fields', { title, hasdomains: !!domains, hasStartDate: !!startDate, hasEndDate: !!endDate });
+      return res.status(400).json({ message: 'Missing required fields: title, domains, startDate, endDate' });
+    }
 
     // Check for duplicate test title
     const existingTest = await Test.findOne({ title: title.trim() });
     if (existingTest) {
-      return res.status(400).json({ message: 'Text/Name already been there.' });
+      logger.warn('Test creation failed: Duplicate title', { title });
+      return res.status(400).json({ message: 'Test with this title already exists.' });
     }
 
-    const test = await Test.create({ title: title.trim(), domains, startDate, endDate, eligibleStudents });
-    res.json(test);
+    const test = await Test.create({ 
+      title: title.trim(), 
+      domains, 
+      startDate, 
+      endDate, 
+      eligibleStudents: eligibleStudents || [] 
+    });
+    logger.info('Test created successfully', { testId: test._id, title: test.title });
+    res.status(201).json(test);
   } catch (error) {
+    logger.error('Failed to create test', { error: error.message });
     res.status(500).json({ message: error.message });
   }
 });
 
 // Update test status manually
-router.put("/tests/:id/status", auth, requireRole("admin"), async (req, res) => {
-  const { status } = req.body;
-  const test = await Test.findByIdAndUpdate(req.params.id, { status }, { new: true });
-  res.json(test);
+router.put("/tests/:id/status", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const validStatuses = ['inactive', 'active', 'finished'];
+    
+    logger.info('Updating test status', { testId: req.params.id, newStatus: status });
+
+    if (!status || !validStatuses.includes(status)) {
+      logger.warn('Test status update failed: Invalid status', { testId: req.params.id, providedStatus: status });
+      return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+    }
+
+    const test = await Test.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    if (!test) {
+      logger.warn('Test status update failed: Test not found', { testId: req.params.id });
+      return res.status(404).json({ message: 'Test not found' });
+    }
+    
+    logger.info('Test status updated successfully', { testId: test._id, status: test.status });
+    res.json(test);
+  } catch (err) {
+    logger.error('Failed to update test status', { testId: req.params.id, error: err.message });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 
-// helper: send email
+// Helper: send email with error handling
 async function sendMail(to, subject, text) {
-  if (process.env.MAIL_USER && process.env.MAIL_PASS) {
+  if (!process.env.MAIL_USER || !process.env.MAIL_PASS) {
+    logger.warn('Email not configured', { to, subject });
+    return;
+  }
+  
+  try {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
-      auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+      auth: { 
+        user: process.env.MAIL_USER, 
+        pass: process.env.MAIL_PASS 
+      },
     });
-    await transporter.sendMail({ from: `"Interview Portal" <${process.env.MAIL_USER}>`, to, subject, text });
-  } else {
-    console.log('MAIL not set; skip email to', to);
+    
+    await transporter.sendMail({ 
+      from: `"Interview Portal" <${process.env.MAIL_USER}>`, 
+      to, 
+      subject, 
+      text 
+    });
+    logger.info('Email sent successfully', { to, subject });
+  } catch (err) {
+    logger.error('Email send failed', { to, subject, error: err.message });
   }
 }
 
@@ -128,7 +116,9 @@ router.get('/pending', async (req, res) => {
     const page = parseInt(req.query.page);
     const limit = parseInt(req.query.limit);
 
-    if (page && limit) {
+    logger.info('Fetching pending users', { page, limit });
+
+    if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
       const [users, total] = await Promise.all([
         User.find({ isActive: false })
@@ -139,6 +129,7 @@ router.get('/pending', async (req, res) => {
           .lean(),
         User.countDocuments({ isActive: false })
       ]);
+      logger.info('Pending users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
@@ -146,8 +137,10 @@ router.get('/pending', async (req, res) => {
       .select('name email role createdAt')
       .sort({ createdAt: -1 })
       .lean();
+    logger.info('All pending users fetched', { count: users.length });
     res.json({ users });
   } catch (err) {
+    logger.error('Failed to fetch pending users', { error: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -155,19 +148,33 @@ router.get('/pending', async (req, res) => {
 // Approve user
 router.put('/approve/:id', async (req, res) => {
   try {
-    const user = await User.findByIdAndUpdate(req.params.id, { isActive: true }, { new: true }).lean();
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const userId = req.params.id;
+    logger.info('Attempting to approve user', { userId });
 
-    // respond immediately; send email in background
+    if (!userId || userId.length !== 24) {
+      logger.warn('User approval failed: Invalid user ID format', { userId });
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findByIdAndUpdate(userId, { isActive: true }, { new: true }).lean();
+    if (!user) {
+      logger.warn('User approval failed: User not found', { userId });
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    logger.info('User approved successfully', { userId: user._id, userEmail: user.email, userName: user.name });
+
+    // Respond immediately; send email in background
     res.json({ message: 'User approved', user });
 
-    // fire-and-forget email
+    // Fire-and-forget email
     sendMail(
       user.email,
       'Your account has been approved',
       `Hello ${user.name},\n\nYour account has been approved by Admin. You can now login.\n\nRegards,\nInterview Portal`
-    ).catch(() => { });
+    );
   } catch (err) {
+    logger.error('Failed to approve user', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -178,26 +185,31 @@ router.get('/registered', async (req, res) => {
     const page = parseInt(req.query.page);
     const limit = parseInt(req.query.limit);
 
-    if (page && limit) {
+    logger.info('Fetching registered users', { page, limit });
+
+    if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
-      const [users, total] = await Promise.all([
-        User.find({ isActive: true })
-          .select('name email role createdAt updatedAt')
+    const [users, total] = await Promise.all([
+      User.find({ isActive: true })
+        .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit)
           .lean(),
         User.countDocuments({ isActive: true })
       ]);
+      logger.info('Registered users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
     const users = await User.find({ isActive: true })
-      .select('name email role createdAt updatedAt')
+      .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
       .sort({ createdAt: -1 })
       .lean();
+    logger.info('All registered users fetched', { count: users.length });
     res.json({ users });
   } catch (err) {
+    logger.error('Failed to fetch registered users', { error: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -205,18 +217,32 @@ router.get('/registered', async (req, res) => {
 // Delete user (send email on deletion)
 router.delete('/remove/:id', async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const userId = req.params.id;
+    logger.info('Attempting to delete user', { userId });
 
-    // respond immediately; email in background
+    if (!userId || userId.length !== 24) {
+      logger.warn('User deletion failed: Invalid user ID format', { userId });
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      logger.warn('User deletion failed: User not found', { userId });
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    logger.info('User deleted successfully', { userId: user._id, userEmail: user.email, userName: user.name });
+
+    // Respond immediately; email in background
     res.json({ message: 'User removed' });
 
     sendMail(
       user.email,
       'Your account has been removed',
       `Hello ${user.name},\n\nYour account access has been denied/deleted. Please register again if needed.\n\nRegards,\nInterview Portal`
-    ).catch(() => { });
+    );
   } catch (err) {
+    logger.error('Failed to delete user', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
   }
 });
@@ -224,16 +250,19 @@ router.delete('/remove/:id', async (req, res) => {
 // Get all students for test eligibility selection
 router.get('/students', async (req, res) => {
   try {
+    logger.info('Fetching all active students');
     const students = await User.find({
       isActive: true,
       role: 'student'
     })
-      .select('_id name email')
+      .select('_id name email collegeName department yearOfPassing mobileNumber')
       .sort({ name: 1 })
       .lean();
 
-    res.json({ students });
+    logger.info('Students fetched successfully', { count: students.length });
+    res.json({ students, count: students.length });
   } catch (err) {
+    logger.error('Failed to fetch students', { error: err.message });
     res.status(500).json({ message: err.message });
   }
 });

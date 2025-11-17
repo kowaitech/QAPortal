@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import logger from '../utils/logger.js';
 
 const StudentAnswerSchema = new mongoose.Schema({
   student: {
@@ -27,7 +28,8 @@ const StudentAnswerSchema = new mongoose.Schema({
   },
   answerText: {
     type: String,
-    trim: true
+    trim: true,
+    maxlength: 10000
   },
   imageUrl: {
     type: String,
@@ -62,9 +64,40 @@ const StudentAnswerSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for efficient querying
+// Validation: ensure examEndTime is after examStartTime
+StudentAnswerSchema.pre('validate', function(next) {
+  try {
+    if (this.examStartTime && this.examEndTime && this.examEndTime < this.examStartTime) {
+      return next(new Error('examEndTime must be after examStartTime'));
+    }
+    return next();
+  } catch (e) {
+    return next(e);
+  }
+});
+
+// Indexes for efficient querying
 StudentAnswerSchema.index({ student: 1, domain: 1, section: 1 });
 StudentAnswerSchema.index({ domain: 1, section: 1, submittedAt: -1 });
 StudentAnswerSchema.index({ student: 1, test: 1 });
+StudentAnswerSchema.index({ question: 1, test: 1 });
 
-export default mongoose.model('StudentAnswer', StudentAnswerSchema);
+// Post-save hook for observability
+StudentAnswerSchema.post('save', function(doc) {
+  try {
+    logger.info('StudentAnswer saved', { id: doc._id, student: doc.student, question: doc.question, test: doc.test, submittedAt: doc.submittedAt });
+  } catch (e) {
+    logger.error('StudentAnswer post-save logging failed', { error: e });
+  }
+});
+
+// Post-delete hook
+StudentAnswerSchema.post('findOneAndDelete', function(doc) {
+  if (doc) {
+    logger.info('StudentAnswer deleted', { id: doc._id, student: doc.student, question: doc.question });
+  }
+});
+
+// Export model safely for hot-reload environments
+const StudentAnswer = mongoose.models.StudentAnswer || mongoose.model('StudentAnswer', StudentAnswerSchema);
+export default StudentAnswer;

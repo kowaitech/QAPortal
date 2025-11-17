@@ -5,8 +5,11 @@ import { useAuthStore } from '../utils/authStore';
 import { useNavigate } from 'react-router-dom';
 import { useDialog } from '../components/DialogProvider';
 
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^()\-_=+])[A-Za-z\d@$!%*?&#^()\-_=+]{8,}$/;
+
 export default function Login() {
-  const { register, handleSubmit, formState: { errors } } = useForm();
+  const { register, handleSubmit, formState: { errors } } = useForm({ mode: 'onBlur' });
   const setAuth = useAuthStore(state => state.setAuth);
   const nav = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -49,21 +52,35 @@ export default function Login() {
     <div className="min-h-[calc(100vh-72px)] grid place-items-center">
       <div className="max-w-md w-full card bg-white/90">
         <h2 className="text-xl mb-4">Login</h2>
-        <form className="grid gap-3" onSubmit={handleSubmit(onSubmit)}>
-          <input
-            className="input"
-            placeholder="Email"
-            {...register('email', { required: 'Email is required' })}
-          />
-          {errors.email && <span className="text-red-500 text-sm">{errors.email.message}</span>}
+        <form className="grid gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
+          <div>
+            <input
+              className="input"
+              placeholder="Email"
+              type="email"
+              {...register('email', {
+                required: 'Email is required',
+                pattern: { value: emailPattern, message: 'Enter a valid email address' }
+              })}
+            />
+            {errors.email && <span className="text-red-500 text-sm">{errors.email.message}</span>}
+          </div>
 
-          <input
-            className="input"
-            placeholder="Password"
-            type="password"
-            {...register('password', { required: 'Password is required' })}
-          />
-          {errors.password && <span className="text-red-500 text-sm">{errors.password.message}</span>}
+          <div>
+            <input
+              className="input"
+              placeholder="Password"
+              type="password"
+              {...register('password', {
+                required: 'Password is required',
+                pattern: {
+                  value: passwordPattern,
+                  message: 'Min 8 chars with upper, lower, number & special character'
+                }
+              })}
+            />
+            {errors.password && <span className="text-red-500 text-sm">{errors.password.message}</span>}
+          </div>
 
           <button
             className="btn-primary"

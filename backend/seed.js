@@ -1,43 +1,78 @@
 import dotenv from 'dotenv';
+
 dotenv.config();
-import { connectDB } from './config/db.js';
+
+import { connectDB, disconnectDB } from './config/db.js';
 import User from './models/User.js';
-import bcrypt from 'bcryptjs';
+import logger from './utils/logger.js';
+
+const SEED_USERS = [
+  {
+    name: 'Admin',
+    email: 'admin@gmail.com',
+    password: 'admin@123',
+    role: 'admin',
+    isActive: true,
+  },
+  {
+    name: 'Staff',
+    email: 'staff@example.com',
+    password: 'Staff@123',
+    role: 'staff',
+    isActive: false, // needs approval
+  },
+  {
+    name: 'Student',
+    email: 'student@example.com',
+    password: 'Student@123',
+    role: 'student',
+    isActive: true,
+  },
+];
 
 async function seed() {
-  await connectDB(process.env.MONGO_URI);
-  
-  // Create admin user
-  const adminEmail = 'admin@gmail.com';
-  if (!await User.findOne({ email: adminEmail })) {
-    const hash = await bcrypt.hash('admin@123', 10);
-    await User.create({ name: 'Admin', email: adminEmail, password: hash, role: 'admin', isActive: true });
-    console.log('Created admin user:', adminEmail, 'password: admin@123');
-  } else {
-    console.log('Admin already exists');
+  try {
+    logger.info('Seed script started');
+    await connectDB(process.env.MONGO_URI);
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const user of SEED_USERS) {
+      try {
+        const existing = await User.findOne({ email: user.email });
+        if (existing) {
+          logger.info('User already exists', { email: user.email, role: user.role });
+          skipped += 1;
+        } else {
+          // User.create will trigger pre-save hook to hash password
+          await User.create({
+            name: user.name,
+            email: user.email,
+            password: user.password,
+            role: user.role,
+            isActive: user.isActive,
+          });
+          logger.info('User created', { email: user.email, role: user.role });
+          created += 1;
+        }
+      } catch (err) {
+        logger.error('Error seeding user', { email: user.email, error: err });
+      }
+    }
+
+    logger.info('Seed script completed', { created, skipped });
+    await disconnectDB();
+    process.exit(0);
+  } catch (err) {
+    logger.error('Seed script failed', { error: err });
+    try {
+      await disconnectDB();
+    } catch (disconnectErr) {
+      logger.warn('Error during disconnect after failure', { error: disconnectErr });
+    }
+    process.exit(1);
   }
-  
-  // Create staff user (needs approval)
-  const staffEmail = 'staff@example.com';
-  if (!await User.findOne({ email: staffEmail })) {
-    const hash = await bcrypt.hash('Staff@123', 10);
-    await User.create({ name: 'Staff', email: staffEmail, password: hash, role: 'staff', isActive: false });
-    console.log('Created staff user (needs approval):', staffEmail, 'password: Staff@123');
-  } else {
-    console.log('Staff exists');
-  }
-  
-  // Create student user (active)
-  const studentEmail = 'student@example.com';
-  if (!await User.findOne({ email: studentEmail })) {
-    const hash = await bcrypt.hash('Student@123', 10);
-    await User.create({ name: 'Student', email: studentEmail, password: hash, role: 'student', isActive: true });
-    console.log('Created student user:', studentEmail, 'password: Student@123');
-  } else {
-    console.log('Student exists');
-  }
-  
-  process.exit(0);
 }
 
-seed().catch(e => { console.error(e); process.exit(1); });
+seed();

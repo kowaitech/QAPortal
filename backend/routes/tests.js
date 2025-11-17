@@ -4,7 +4,9 @@ import Test from '../models/Test.js';
 import StudentTest from '../models/StudentTest.js';
 import Question from '../models/Question.js';
 import Domain from '../models/Domain.js';
+import mongoose from 'mongoose';
 import { auth, requireRole } from '../middleware/auth.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -15,14 +17,19 @@ function computeStatus(t) {
   return 'active';
 }
 
+function isValidId(id) {
+  return mongoose.Types.ObjectId.isValid(String(id));
+}
+
 // Check if test title exists
 router.get('/check-title/:title', auth, requireRole('admin'), async (req, res) => {
   try {
     const { title } = req.params;
     const existingTest = await Test.findOne({ title: title.trim() });
+    logger.info('Checked test title availability', { adminId: req.user?._id, title, exists: !!existingTest });
     res.json({ exists: !!existingTest });
   } catch (e) {
-    console.error(e);
+    logger.error('Check test title failed', { error: e.message });
     res.status(500).json({ message: 'Failed to check test title' });
   }
 });
@@ -65,9 +72,10 @@ router.post('/admin', auth, requireRole('admin'), async (req, res) => {
       eligibleStudents,
       status: 'inactive'
     });
+    logger.info('Created test', { adminId: req.user?._id, testId: test._id, title });
     res.status(201).json(test);
   } catch (e) {
-    console.error(e);
+    logger.error('Create test failed', { error: e.message });
     res.status(500).json({ message: 'Failed to create test' });
   }
 });
@@ -76,9 +84,10 @@ router.post('/admin', auth, requireRole('admin'), async (req, res) => {
 router.get('/list', auth, requireRole('admin'), async (req, res) => {
   try {
     const tests = await Test.find().populate('domains', 'name').lean();
+    logger.info('Admin fetched tests (list)', { adminId: req.user?._id, count: tests.length });
     res.json(tests);
   } catch (e) {
-    console.error(e);
+    logger.error('List tests failed', { error: e.message });
     res.status(500).json({ message: 'Failed to fetch tests' });
   }
 });
@@ -109,34 +118,50 @@ router.get('/student', auth, requireRole('student'), async (req, res) => {
     const active = withStatus.filter(t => t.status === 'active' && !completedTestIds.includes(t._id.toString()));
     const completed = withStatus.filter(t => completedTestIds.includes(t._id.toString()));
 
+    logger.info('Student fetched available tests', { studentId: req.user._id, total: withStatus.length });
     res.json({ upcoming, active, completed });
   } catch (e) {
-    console.error(e);
+    logger.error('Fetch student tests failed', { error: e.message, studentId: req.user?._id });
     res.status(500).json({ message: 'Failed to fetch student tests' });
   }
 });
 
 // Get test by id (populate domains)
 router.get('/:id', auth, async (req, res) => {
-  const t = await Test.findById(req.params.id).populate('domains', 'name').lean();
-  if (!t) return res.status(404).json({ message: 'Not found' });
-  return res.json({ ...t, status: computeStatus(t) });
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid id' });
+    const t = await Test.findById(id).populate('domains', 'name').lean();
+    if (!t) return res.status(404).json({ message: 'Not found' });
+    return res.json({ ...t, status: computeStatus(t) });
+  } catch (e) {
+    logger.error('Get test by id failed', { error: e, id: req.params.id });
+    return res.status(500).json({ message: 'Failed to fetch test' });
+  }
 });
 
 // Student start test
 router.post('/:id/start', auth, requireRole('student'), async (req, res) => {
   try {
     const { domainId, section } = req.body;
-    const test = await Test.findById(req.params.id).lean();
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid test id' });
+    if (!isValidId(domainId)) return res.status(400).json({ message: 'Invalid domain id' });
+
+    const test = await Test.findById(id).lean();
     if (!test) return res.status(404).json({ message: 'Test not found' });
     const status = computeStatus(test);
     if (status !== 'active') return res.status(400).json({ message: 'Test is not active' });
-    if (!test.domains.map(String).includes(String(domainId))) return res.status(400).json({ message: 'Domain not in this test' });
+    if (!test.domains.map(String).includes(String(domainId))) {
+      logger.warn('Student requested domain not in test', { studentId: req.user._id, testId: id, domainId });
+      return res.status(400).json({ message: 'Domain not in this test' });
+    }
     if (test.sections && !test.sections.includes(section)) return res.status(400).json({ message: 'Invalid section' });
 
     // Check if student already took this test
     const existingTest = await StudentTest.findOne({ student: req.user._id, test: test._id });
     if (existingTest && (existingTest.status === 'completed' || existingTest.status === 'expired')) {
+      logger.warn('Student attempted to start an already completed test', { studentId: req.user._id, testId: id });
       return res.status(400).json({ message: 'You have already completed this test' });
     }
 
@@ -156,9 +181,10 @@ router.post('/:id/start', auth, requireRole('student'), async (req, res) => {
     if (Question.schema.paths.section) qFilter.section = section;
     const questions = await Question.find(qFilter).select('title description domain section options type').lean();
 
+    logger.info('Student started test', { studentId: req.user._id, testId: id, domainId });
     res.json({ studentTest: st, questions, dueTime: due });
   } catch (e) {
-    console.error(e);
+    logger.error('Start test failed', { error: e.message, studentId: req.user?._id });
     res.status(500).json({ message: 'Failed to start test' });
   }
 });
@@ -166,16 +192,22 @@ router.post('/:id/start', auth, requireRole('student'), async (req, res) => {
 // Student submit
 router.post('/:id/submit', auth, requireRole('student'), async (req, res) => {
   try {
-    const st = await StudentTest.findOne({ student: req.user._id, test: req.params.id });
-    if (!st) return res.status(404).json({ message: 'Not started' });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid test id' });
+    const st = await StudentTest.findOne({ student: req.user._id, test: id });
+    if (!st) {
+      logger.warn('Student attempted to submit without starting test', { studentId: req.user._id, testId: id });
+      return res.status(404).json({ message: 'Not started' });
+    }
     const now = new Date();
     const expired = st.dueTime && now > st.dueTime;
     st.endTime = now;
     st.status = expired ? 'expired' : 'completed';
     await st.save();
+    logger.info('Student submitted test', { studentId: req.user._id, testId: id, status: st.status });
     res.json({ ok: true, status: st.status });
   } catch (e) {
-    console.error(e);
+    logger.error('Submit test failed', { error: e.message, studentId: req.user?._id });
     res.status(500).json({ message: 'Failed to submit' });
   }
 });
@@ -183,9 +215,28 @@ router.post('/:id/submit', auth, requireRole('student'), async (req, res) => {
 // Admin: list all tests
 router.get('/', auth, requireRole('admin'), async (req, res) => {
   try {
-    const tests = await Test.find({}).select('title startDate endDate durationMinutes domains createdAt updatedAt');
+    const { page, limit } = req.query;
+    const pageNum = page ? Math.max(1, parseInt(page, 10) || 1) : null;
+    const limitNum = limit ? Math.min(100, Math.max(1, parseInt(limit, 10) || 10)) : null;
+
+    // If pagination params provided, return paginated metadata; otherwise return full list (backwards compatible)
+    if (pageNum && limitNum) {
+      const total = await Test.countDocuments({});
+      const tests = await Test.find({})
+        .select('title startDate endDate durationMinutes domains createdAt updatedAt')
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean();
+      const totalPages = Math.ceil(total / limitNum);
+      logger.info('Admin fetched paginated tests', { adminId: req.user?._id, page: pageNum, limit: limitNum, total, totalPages });
+      return res.json({ data: tests, page: pageNum, limit: limitNum, total, totalPages });
+    }
+
+    const tests = await Test.find({}).select('title startDate endDate durationMinutes domains createdAt updatedAt').lean();
+    logger.info('Admin fetched all tests', { adminId: req.user?._id, count: tests.length });
     res.json(tests);
   } catch (e) {
+    logger.error('Admin list tests failed', { error: e });
     res.status(500).json({ message: 'Failed to fetch tests' });
   }
 });
@@ -194,6 +245,7 @@ router.get('/', auth, requireRole('admin'), async (req, res) => {
 router.put('/:id', auth, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid id' });
     const { title, domains, startDate, endDate, durationMinutes } = req.body;
 
     let update = { title, domains, durationMinutes };
@@ -215,8 +267,9 @@ router.put('/:id', auth, requireRole('admin'), async (req, res) => {
     }
 
     res.json(updatedTest);
+    logger.info('Updated test', { adminId: req.user?._id, testId: id });
   } catch (e) {
-    console.error(e);
+    logger.error('Update test failed', { error: e.message, adminId: req.user?._id });
     res.status(500).json({ message: 'Failed to update test' });
   }
 });
@@ -225,12 +278,15 @@ router.put('/:id', auth, requireRole('admin'), async (req, res) => {
 router.delete('/:id', auth, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ message: 'Invalid id' });
     const t = await Test.findByIdAndDelete(id);
     if (!t) return res.status(404).json({ message: 'Test not found' });
     // Also remove related StudentTest allocations
     await StudentTest.deleteMany({ test: id });
+    logger.info('Deleted test', { adminId: req.user?._id, testId: id });
     res.json({ message: 'Test deleted' });
   } catch (e) {
+    logger.error('Delete test failed', { error: e.message, adminId: req.user?._id });
     res.status(500).json({ message: 'Failed to delete test' });
   }
 });
@@ -272,9 +328,10 @@ router.get('/student/my-tests', auth, requireRole('student'), async (req, res) =
       }
     });
 
+    logger.info('Student fetched my-tests', { studentId: req.user._id, count: studentTests.length });
     res.json(categorized);
   } catch (e) {
-    console.error(e);
+    logger.error('Fetch student test history failed', { error: e.message, studentId: req.user?._id });
     res.status(500).json({ message: 'Failed to fetch your tests' });
   }
 });

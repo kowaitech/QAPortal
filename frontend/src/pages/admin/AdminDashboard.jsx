@@ -349,6 +349,10 @@ export default function AdminDashboard() {
                   <tr className="border-b">
                     <th className="p-2 text-left">Name</th>
                     <th className="p-2 text-left">Email</th>
+                    <th className="p-2 text-left">College</th>
+                    <th className="p-2 text-left">Mobile</th>
+                    <th className="p-2 text-left">Department</th>
+                    <th className="p-2 text-left">Year of Passing</th>
                     <th className="p-2">Action</th>
                   </tr>
                 </thead>
@@ -357,6 +361,10 @@ export default function AdminDashboard() {
                     <tr key={u._id} className="border-t">
                       <td className="p-2">{u.name}</td>
                       <td className="p-2">{u.email}</td>
+                      <td className="p-2">{u.collegeName || "-"}</td>
+                      <td className="p-2">{u.mobileNumber || "-"}</td>
+                      <td className="p-2">{u.department || "-"}</td>
+                      <td className="p-2">{u.yearOfPassing || "-"}</td>
                       <td className="p-2 space-x-2">
                         {userTab === "pending" ? (
                           <>

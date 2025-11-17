@@ -1,11 +1,13 @@
   import express from 'express';
-import fs from 'fs';
 import StudentAnswer from '../models/StudentAnswer.js';
 import Test from '../models/Test.js';
 import Question from '../models/Question.js';
 import Domain from '../models/Domain.js';
+import StudentTest from '../models/StudentTest.js';
 import cloudinary from '../config/cloudinary.js';
 import { auth, requireRole } from '../middleware/auth.js';
+import mongoose from 'mongoose';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -13,11 +15,17 @@ const router = express.Router();
 
 // Start exam session
 router.post('/start-exam', auth, requireRole('student'), async (req, res) => {
-  try {
-    const { domainId, section } = req.body;
+    try {
+      logger.info('Start exam session requested', { student: req.user._id, domainId: req.body?.domainId, section: req.body?.section });
+    const { domainId, section, testId } = req.body;
 
     if (!domainId || !section) {
       return res.status(400).json({ message: 'Domain ID and section are required' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(domainId)) {
+      logger.warn('Start exam failed: invalid domainId', { domainId });
+      return res.status(400).json({ message: 'Invalid domain id' });
     }
 
     // Check if domain exists
@@ -37,6 +45,7 @@ router.post('/start-exam', auth, requireRole('student'), async (req, res) => {
       // Check if exam time has expired
       const now = new Date();
       if (now > existingSession.examEndTime) {
+        logger.warn('Existing exam session expired', { student: req.user._id, domainId, section });
         return res.status(403).json({
           message: 'Exam time has expired',
           examExpired: true
@@ -55,6 +64,20 @@ router.post('/start-exam', auth, requireRole('student'), async (req, res) => {
     const examStartTime = new Date();
     const examEndTime = new Date(examStartTime.getTime() + (2 * 60 * 60 * 1000)); // 2 hours
 
+    // Optionally persist a StudentTest session when a testId is provided and valid
+    if (testId && mongoose.Types.ObjectId.isValid(testId)) {
+      try {
+        await StudentTest.findOneAndUpdate(
+          { student: req.user._id, test: testId },
+          { $set: { startTime: examStartTime, dueTime: examEndTime, status: 'in-progress', selectedDomain: domainId, selectedSection: section } },
+          { upsert: true }
+        );
+        logger.info('Persisted StudentTest session', { student: req.user._id, testId });
+      } catch (persistErr) {
+        logger.warn('Failed to persist StudentTest session (non-fatal)', { error: persistErr.message });
+      }
+    }
+
     res.json({
       message: 'Exam session started',
       examStartTime,
@@ -62,17 +85,24 @@ router.post('/start-exam', auth, requireRole('student'), async (req, res) => {
       timeRemaining: 2 * 60 * 60 * 1000 // 2 hours in milliseconds
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    logger.error('Start exam session failed', { error: error.message, student: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Submit answer for a question
 router.post('/submit', auth, requireRole('student'), async (req, res) => {
-  try {
+    try {
+      logger.info('Submit answer attempt', { student: req.user._id, questionId: req.body?.questionId, domainId: req.body?.domainId });
     const { questionId, domainId, section, examStartTime, answerText, testId } = req.body;
 
     if (!questionId || !domainId || !section || !examStartTime) {
       return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(questionId) || !mongoose.Types.ObjectId.isValid(domainId)) {
+      logger.warn('Submit answer failed: invalid ids', { questionId, domainId });
+      return res.status(400).json({ message: 'Invalid questionId or domainId' });
     }
 
     // Verify question exists
@@ -141,6 +171,7 @@ router.post('/submit', auth, requireRole('student'), async (req, res) => {
       Object.assign(existingAnswer, answerData);
       await existingAnswer.save();
 
+      logger.info('Answer updated', { answerId: existingAnswer._id, student: req.user._id });
       res.json({
         message: 'Answer updated successfully',
         answer: existingAnswer
@@ -148,82 +179,103 @@ router.post('/submit', auth, requireRole('student'), async (req, res) => {
     } else {
       // Create new answer
       const newAnswer = await StudentAnswer.create(answerData);
+      logger.info('Answer submitted', { answerId: newAnswer._id, student: req.user._id });
       res.json({
         message: 'Answer submitted successfully',
         answer: newAnswer
       });
     }
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    logger.error('Submit answer failed', { error: error.message, student: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Staff: add a mark for a student's specific answer (first time)
 router.post('/marks/add', auth, requireRole('staff'), async (req, res) => {
-  try {
-    const { answerId, mark } = req.body;
+    try {
+      const { answerId, mark } = req.body;
+      logger.info('Add mark requested', { staff: req.user._id, answerId });
     if (typeof mark !== 'number' || mark < 0) {
       return res.status(400).json({ message: 'mark must be a non-negative number' });
     }
-    
-    const answer = await StudentAnswer.findById(answerId);
-    if (!answer) return res.status(404).json({ message: 'Answer not found' });
-    
-    // Check if mark already exists (not null)
-    if (answer.mark !== null && answer.mark !== undefined) {
-      return res.status(400).json({ message: 'Mark already exists. Use edit endpoint to update.' });
+
+    if (!mongoose.Types.ObjectId.isValid(answerId)) {
+      logger.warn('Add mark failed: invalid answerId', { answerId });
+      return res.status(400).json({ message: 'Invalid answer id' });
     }
-    
-    const updatedAnswer = await StudentAnswer.findByIdAndUpdate(
-      answerId, 
-      { mark, markSubmitted: true }, 
+
+    // Atomic update: only set mark if currently null/undefined
+    const updatedAnswer = await StudentAnswer.findOneAndUpdate(
+      { _id: answerId, $or: [{ mark: null }, { mark: { $exists: false } }] },
+      { $set: { mark, markSubmitted: true } },
       { new: true }
     )
       .populate('student', 'name email')
       .populate('question', 'title section');
-    
+
+    if (!updatedAnswer) {
+      // Either answer not found or mark already exists
+      const exists = await StudentAnswer.findById(answerId).select('mark');
+      if (!exists) return res.status(404).json({ message: 'Answer not found' });
+      return res.status(400).json({ message: 'Mark already exists. Use edit endpoint to update.' });
+    }
+
+    logger.info('Mark saved', { answerId, mark, staff: req.user._id });
     res.json({ message: 'Mark saved successfully', answer: updatedAnswer });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    logger.error('Add mark failed', { error: e.message, staff: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Staff: edit/update an existing mark for a student's specific answer
 router.put('/marks/edit/:id', auth, requireRole('staff'), async (req, res) => {
-  try {
-    const { id: answerId } = req.params;
-    const { mark } = req.body;
+    try {
+      const { id: answerId } = req.params;
+      const { mark } = req.body;
+      logger.info('Edit mark requested', { staff: req.user._id, answerId });
     if (typeof mark !== 'number' || mark < 0) {
       return res.status(400).json({ message: 'mark must be a non-negative number' });
     }
-    
-    const answer = await StudentAnswer.findById(answerId);
-    if (!answer) return res.status(404).json({ message: 'Answer not found' });
-    
-    // Check if mark exists (not null)
-    if (answer.mark === null || answer.mark === undefined) {
-      return res.status(400).json({ message: 'No mark found. Use add endpoint to create a new mark.' });
+
+    if (!mongoose.Types.ObjectId.isValid(answerId)) {
+      logger.warn('Edit mark failed: invalid answerId', { answerId });
+      return res.status(400).json({ message: 'Invalid answer id' });
     }
-    
-    const updatedAnswer = await StudentAnswer.findByIdAndUpdate(
-      answerId, 
-      { mark }, 
+
+    // Atomic update: only allow edit if a mark already exists
+    const updatedAnswer = await StudentAnswer.findOneAndUpdate(
+      { _id: answerId, mark: { $ne: null } },
+      { $set: { mark } },
       { new: true }
     )
       .populate('student', 'name email')
       .populate('question', 'title section');
-    
+
+    if (!updatedAnswer) {
+      const exists = await StudentAnswer.findById(answerId).select('mark');
+      if (!exists) return res.status(404).json({ message: 'Answer not found' });
+      return res.status(400).json({ message: 'No existing mark found. Use add endpoint to create a new mark.' });
+    }
+
+    logger.info('Mark updated', { answerId, mark, staff: req.user._id });
     res.json({ message: 'Mark updated successfully', answer: updatedAnswer });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    logger.error('Edit mark failed', { error: e.message, staff: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Staff: calculate and persist total marks for a student in a domain (optional filter by test)
 router.post('/calculate-total', auth, requireRole('staff'), async (req, res) => {
-  try {
+    try {
+      logger.info('Calculate total requested', { staff: req.user._id, studentId: req.body?.studentId, domainId: req.body?.domainId });
     const { studentId, domainId, testId } = req.body;
     if (!studentId || !domainId) return res.status(400).json({ message: 'studentId and domainId are required' });
+    if (!mongoose.Types.ObjectId.isValid(studentId) || !mongoose.Types.ObjectId.isValid(domainId)) {
+      return res.status(400).json({ message: 'Invalid studentId or domainId' });
+    }
 
     const filter = { student: studentId, domain: domainId };
     if (testId) filter.test = testId;
@@ -231,26 +283,31 @@ router.post('/calculate-total', auth, requireRole('staff'), async (req, res) => 
     const answers = await StudentAnswer.find(filter).select('mark');
     const total = answers.reduce((sum, a) => sum + (a.mark !== null && a.mark !== undefined ? a.mark : 0), 0);
 
-    // Persist to StudentTest if testId provided, else upsert a standalone record in StudentTest for the domain
+    // Persist to StudentTest if testId provided
     if (testId) {
+      if (!mongoose.Types.ObjectId.isValid(testId)) return res.status(400).json({ message: 'Invalid test id' });
       await Test.findById(testId); // ensure exists (optional)
-      await (await import('../models/StudentTest.js')).default.findOneAndUpdate(
+      await StudentTest.findOneAndUpdate(
         { student: studentId, test: testId },
         { $set: { score: total } },
         { upsert: true }
       );
     }
 
+    logger.info('Total calculated', { studentId, domainId, total });
     res.json({ total });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    logger.error('Calculate total failed', { error: e.message, staff: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Staff: delete image from student answer
 router.delete('/answers/image/:id', auth, requireRole('staff'), async (req, res) => {
-  try {
+    try {
+      logger.info('Delete answer image requested', { staff: req.user._id, answerId: req.params?.id });
     const { id: answerId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(answerId)) return res.status(400).json({ message: 'Invalid answer id' });
     const { imageUrl } = req.body;
 
     if (!imageUrl) {
@@ -278,23 +335,23 @@ router.delete('/answers/image/:id', auth, requireRole('staff'), async (req, res)
           fullPublicId = `${folderPath}/${publicId}`;
         }
 
-        console.log('Deleting from Cloudinary with public ID:', fullPublicId);
+        logger.info('Deleting from Cloudinary', { publicId: fullPublicId });
 
         // Delete from Cloudinary
         const result = await cloudinary.uploader.destroy(fullPublicId);
         
-        console.log('Cloudinary deletion result:', result);
+        logger.info('Cloudinary deletion result', { result });
         
         if (result.result !== 'ok') {
-          console.warn('Cloudinary deletion failed:', result);
+          logger.warn('Cloudinary deletion failed', { result });
           // Don't throw error, continue with database deletion
         }
       } catch (cloudinaryError) {
-        console.error('Error deleting from Cloudinary:', cloudinaryError);
+        logger.error('Error deleting from Cloudinary', { error: cloudinaryError.message });
         // Continue with database deletion even if Cloudinary fails
       }
     } else {
-      console.log('Non-Cloudinary URL detected, skipping Cloudinary deletion');
+      logger.info('Non-Cloudinary URL detected, skipping Cloudinary deletion');
     }
 
     // Remove only ONE instance of the image URL from the answer text (HTML content)
@@ -305,39 +362,46 @@ router.delete('/answers/image/:id', auth, requireRole('staff'), async (req, res)
       await answer.save();
     }
 
+    logger.info('Answer image deleted successfully', { answerId });
     res.json({ message: 'Answer image deleted successfully' });
   } catch (error) {
-    console.error('Error removing image from answer:', error);
-    res.status(500).json({ message: 'Failed to remove image from answer', error: error.message });
+    logger.error('Delete answer image failed', { error: error.message, staff: req.user?._id });
+    res.status(500).json({ message: 'Failed to remove image from answer' });
   }
 });
 
 // Staff: delete entire student answer (and Cloudinary image if present)
 router.delete('/answers/:id', auth, requireRole('staff'), async (req, res) => {
-  try {
-    const { id } = req.params;
+    try {
+      const { id } = req.params;
+      logger.info('Delete student answer requested', { staff: req.user._id, answerId: id });
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: 'Invalid answer id' });
     const answer = await StudentAnswer.findById(id);
     if (!answer) return res.status(404).json({ message: 'Answer not found' });
 
     if (answer.imagePublicId) {
       try {
-        await cloudinary.uploader.destroy(answer.imagePublicId);
-      } catch (e) {
-        console.warn('Cloudinary destroy failed for', answer.imagePublicId, e.message);
-      }
+          await cloudinary.uploader.destroy(answer.imagePublicId);
+        } catch (e) {
+          logger.warn('Cloudinary destroy failed for', { publicId: answer.imagePublicId, error: e.message });
+        }
     }
 
     await StudentAnswer.findByIdAndDelete(id);
+    logger.info('Student answer deleted', { answerId: id, staff: req.user._id });
     res.json({ message: 'Answer deleted successfully' });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to delete answer', error: error.message });
+    logger.error('Delete student answer failed', { error: error.message, staff: req.user?._id });
+    res.status(500).json({ message: 'Failed to delete answer' });
   }
 });
 
 // Get student's answers for a domain/section
 router.get('/my-answers/:domainId/:section', auth, requireRole('student'), async (req, res) => {
-  try {
+    try {
+      logger.info('Fetching my answers', { student: req.user._id, domainId: req.params?.domainId, section: req.params?.section });
     const { domainId, section } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(domainId)) return res.status(400).json({ message: 'Invalid domain id' });
 
     const answers = await StudentAnswer.find({
       student: req.user._id,
@@ -348,16 +412,20 @@ router.get('/my-answers/:domainId/:section', auth, requireRole('student'), async
       .sort({ submittedAt: -1 })
       .lean();
 
+    logger.info('My answers fetched', { student: req.user._id, count: answers.length });
     res.json({ answers });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    logger.error('Fetch my answers failed', { error: error.message, student: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Check exam status
 router.get('/exam-status/:domainId/:section', auth, requireRole('student'), async (req, res) => {
-  try {
+    try {
+      logger.info('Checking exam status', { student: req.user._id, domainId: req.params?.domainId, section: req.params?.section });
     const { domainId, section } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(domainId)) return res.status(400).json({ message: 'Invalid domain id' });
 
     const existingSession = await StudentAnswer.findOne({
       student: req.user._id,
@@ -376,6 +444,7 @@ router.get('/exam-status/:domainId/:section', auth, requireRole('student'), asyn
     const timeRemaining = Math.max(0, existingSession.examEndTime - now);
     const hasExpired = now > existingSession.examEndTime;
 
+    logger.info('Exam status returned', { student: req.user._id, hasStarted: !!existingSession, hasExpired });
     res.json({
       hasStarted: true,
       examStartTime: existingSession.examStartTime,
@@ -384,7 +453,8 @@ router.get('/exam-status/:domainId/:section', auth, requireRole('student'), asyn
       hasExpired
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    logger.error('Check exam status failed', { error: error.message, student: req.user?._id });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 

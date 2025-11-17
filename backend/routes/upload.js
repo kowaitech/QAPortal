@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import cloudinary from '../config/cloudinary.js';
 import { auth, requireRole } from '../middleware/auth.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -14,16 +15,17 @@ const upload = multer({
     },
     fileFilter: (req, file, cb) => {
         // Check if file is an image
-        if (file.mimetype.startsWith('image/')) {
+        if (file.mimetype && file.mimetype.startsWith('image/')) {
             cb(null, true);
         } else {
+            logger.warn('Rejected non-image upload', { userId: req.user?._id, mimetype: file.mimetype, filename: file.originalname });
             cb(new Error('Only image files are allowed'), false);
         }
     },
 });
 
-// Test upload route without authentication (for debugging)
-router.post('/test-image', upload.single('image'), async (req, res) => {
+// Test upload route (requires auth) - returns base64 data URL (debugging)
+router.post('/test-image', auth, upload.single('image'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ message: 'No image file provided' });
@@ -33,6 +35,7 @@ router.post('/test-image', upload.single('image'), async (req, res) => {
         const base64 = req.file.buffer.toString('base64');
         const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
 
+        logger.info('Test image converted to base64', { userId: req.user?._id, filename: req.file.originalname });
         return res.json({
             message: 'Image uploaded successfully (test route)',
             url: dataUrl,
@@ -40,16 +43,13 @@ router.post('/test-image', upload.single('image'), async (req, res) => {
             fallback: true
         });
     } catch (error) {
-        console.error('Test upload error:', error);
-        res.status(500).json({
-            message: 'Failed to upload image',
-            error: error.message
-        });
+        logger.error('Test upload error', { error });
+        res.status(500).json({ message: 'Failed to upload image' });
     }
 });
 
-// Upload image to Cloudinary (temporarily without authentication for testing)
-router.post('/image', upload.single('image'), async (req, res) => {
+// Upload image to Cloudinary (requires auth)
+router.post('/image', auth, upload.single('image'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ message: 'No image file provided' });
@@ -60,13 +60,8 @@ router.post('/image', upload.single('image'), async (req, res) => {
             // Fallback: Convert to base64 and return as data URL
             const base64 = req.file.buffer.toString('base64');
             const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
-
-            return res.json({
-                message: 'Image uploaded successfully (base64 fallback)',
-                url: dataUrl,
-                publicId: null,
-                fallback: true
-            });
+            logger.warn('Cloudinary not configured - returning base64 fallback', { userId: req.user?._id });
+            return res.json({ message: 'Image uploaded successfully (base64 fallback)', url: dataUrl, publicId: null, fallback: true });
         }
 
         // Upload to Cloudinary
@@ -88,37 +83,28 @@ router.post('/image', upload.single('image'), async (req, res) => {
                 }
             ).end(req.file.buffer);
         });
-
-        res.json({
-            message: 'Image uploaded successfully',
-            url: result.secure_url,
-            publicId: result.public_id
-        });
+        logger.info('Image uploaded to Cloudinary', { userId: req.user?._id, publicId: result.public_id, url: result.secure_url });
+        res.json({ message: 'Image uploaded successfully', url: result.secure_url, publicId: result.public_id });
     } catch (error) {
-        console.error('Upload error:', error);
+        logger.error('Upload error', { error });
 
         // Fallback to base64 if Cloudinary fails
         try {
-            const base64 = req.file.buffer.toString('base64');
+            const base64 = req.file?.buffer?.toString('base64');
+            if (!base64) throw new Error('No file buffer available for fallback');
             const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
 
-            return res.json({
-                message: 'Image uploaded successfully (base64 fallback)',
-                url: dataUrl,
-                publicId: null,
-                fallback: true
-            });
+            logger.warn('Cloudinary upload failed, returning base64 fallback', { userId: req.user?._id, error });
+            return res.json({ message: 'Image uploaded successfully (base64 fallback)', url: dataUrl, publicId: null, fallback: true });
         } catch (fallbackError) {
-            res.status(500).json({
-                message: 'Failed to upload image',
-                error: error.message
-            });
+            logger.error('Upload fallback failed', { error: fallbackError });
+            res.status(500).json({ message: 'Failed to upload image' });
         }
     }
 });
 
 // Delete image from Cloudinary
-router.delete('/image', auth, requireRole(['staff']), async (req, res) => {
+router.delete('/image', auth, requireRole('staff'), async (req, res) => {
     try {
         const { publicId } = req.body;
 
@@ -130,15 +116,16 @@ router.delete('/image', auth, requireRole(['staff']), async (req, res) => {
         const result = await cloudinary.uploader.destroy(publicId);
 
         if (result.result === 'ok') {
+            logger.info('Deleted image from Cloudinary', { adminId: req.user?._id, publicId });
             res.json({ message: 'Image deleted successfully' });
         } else {
+            logger.warn('Cloudinary destroy returned unexpected result', { adminId: req.user?._id, publicId, result });
             res.status(404).json({ message: 'Image not found or already deleted' });
         }
     } catch (error) {
-        console.error('Delete error:', error);
+        logger.error('Delete image failed', { error });
         res.status(500).json({
-            message: 'Failed to delete image',
-            error: error.message
+            message: 'Failed to delete image'
         });
     }
 });
@@ -146,6 +133,7 @@ router.delete('/image', auth, requireRole(['staff']), async (req, res) => {
 // Extract public ID from Cloudinary URL
 export const extractPublicId = (url) => {
     if (!url || !url.includes('cloudinary.com')) {
+        logger.warn('extractPublicId called with non-cloudinary url', { url });
         return null;
     }
 
@@ -157,9 +145,11 @@ export const extractPublicId = (url) => {
     const folderIndex = url.indexOf('/exam-answers/');
     if (folderIndex !== -1) {
         const folderPath = url.substring(folderIndex + 1, url.lastIndexOf('/'));
-        return `${folderPath}/${publicId}`;
+        const fullId = `${folderPath}/${publicId}`;
+        logger.info('Extracted publicId from cloudinary url', { url, publicId: fullId });
+        return fullId;
     }
-
+    logger.info('Extracted publicId from cloudinary url (no folder)', { url, publicId });
     return publicId;
 };
 
