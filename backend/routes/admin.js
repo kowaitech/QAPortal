@@ -89,22 +89,28 @@ router.get('/pending', async (req, res) => {
 
     logger.info('Fetching pending users', { page, limit });
 
+    const baseFilter = {
+      isActive: false,
+      disabled: { $ne: true },
+      role: 'staff'
+    };
+
     if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
       const [users, total] = await Promise.all([
-        User.find({ isActive: false, disabled: { $ne: true } })
+        User.find(baseFilter)
           .select('name email role createdAt collegeName mobileNumber department yearOfPassing')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit)
           .lean(),
-        User.countDocuments({ isActive: false, disabled: { $ne: true } })
+        User.countDocuments(baseFilter)
       ]);
       logger.info('Pending users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
-    const users = await User.find({ isActive: false, disabled: { $ne: true } })
+    const users = await User.find(baseFilter)
       .select('name email role createdAt collegeName mobileNumber department yearOfPassing')
       .sort({ createdAt: -1 })
       .lean();
@@ -148,25 +154,35 @@ router.get('/registered', async (req, res) => {
     const page = parseInt(req.query.page);
     const limit = parseInt(req.query.limit);
 
-    logger.info('Fetching registered users', { page, limit });
+    const includeDisabledStudents = req.query.includeDisabledStudents === 'true';
+    logger.info('Fetching registered users', { page, limit, includeDisabledStudents });
+
+    const baseFilter = includeDisabledStudents
+      ? {
+          $or: [
+            { role: 'student' },
+            { role: { $ne: 'student' }, isActive: true, disabled: { $ne: true } }
+          ]
+        }
+      : { isActive: true, disabled: { $ne: true } };
 
     if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
       const [users, total] = await Promise.all([
-        User.find({ isActive: true, disabled: { $ne: true } })
-        .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
+        User.find(baseFilter)
+          .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing disabled isActive')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit)
           .lean(),
-        User.countDocuments({ isActive: true, disabled: { $ne: true } })
+        User.countDocuments(baseFilter)
       ]);
       logger.info('Registered users fetched with pagination', { page, limit, returned: users.length, total });
       return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
     }
 
-    const users = await User.find({ isActive: true, disabled: { $ne: true } })
-      .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing')
+    const users = await User.find(baseFilter)
+      .select('name email role createdAt updatedAt collegeName mobileNumber department yearOfPassing disabled isActive')
       .sort({ createdAt: -1 })
       .lean();
     logger.info('All registered users fetched', { count: users.length });
@@ -213,6 +229,35 @@ router.delete('/remove/:id', async (req, res) => {
 
   } catch (err) {
     logger.error('Failed to delete user', { userId: req.params.id, error: err.message });
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.put('/students/:id/status', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { disabled } = req.body;
+    logger.info('Updating student status', { userId, disabled });
+
+    if (!userId || userId.length !== 24) {
+      logger.warn('Student status update failed: Invalid user ID format', { userId });
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user || user.role !== 'student') {
+      logger.warn('Student status update failed: Not found or not student', { userId });
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    user.disabled = !!disabled;
+    user.isActive = disabled ? false : true;
+    await user.save();
+
+    logger.info('Student status updated', { userId: user._id, disabled: user.disabled });
+    res.json({ message: user.disabled ? 'Student disabled' : 'Student enabled', user });
+  } catch (err) {
+    logger.error('Failed to update student status', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
   }
 });

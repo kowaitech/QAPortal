@@ -105,7 +105,10 @@ router.post('/register', async (req, res) => {
     });
     
     logger.info('User registered successfully', { userId: user._id, email: user.email });
-    res.status(201).json({ message: 'Registered. Await admin approval.' });
+    res.status(201).json({
+      message: autoActive ? 'Registered successfully. You can login now.' : 'Registered. Await admin approval.',
+      requiresApproval: !autoActive
+    });
   } catch (err) {
     logger.error('Registration failed', { error: err.message });
     res.status(500).json({ message: 'Registration failed. Please try again.' });

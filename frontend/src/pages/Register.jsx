@@ -26,8 +26,11 @@ export default function Register() {
   const onSubmit = async (v) => {
     try {
       setIsSubmitting(true);
-      await api.post('/auth/register', v);
-      await dialog.alert('Registered — awaiting admin approval');
+      const { data } = await api.post('/auth/register', v);
+      const defaultMsg = v.role === 'student'
+        ? 'Registered successfully. You can login now.'
+        : 'Registered — awaiting admin approval';
+      await dialog.alert(data?.message || defaultMsg);
       nav('/login');
     } catch (e) {
       dialog.alert(e.response?.data?.message || 'Failed');
