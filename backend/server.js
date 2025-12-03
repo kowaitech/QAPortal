@@ -25,7 +25,7 @@ if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', true);
 app.use(cors({
   origin: [
     process.env.CLIENT_ORIGIN || 'http://localhost:5173',
-    'https://qaportal-1.onrender.com'
+    'https://qaportal-1.onrender.com', "https://qa-portal-puce.vercel.app"
   ],
   credentials: true
 }));
